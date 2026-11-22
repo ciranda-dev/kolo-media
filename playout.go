@@ -85,6 +85,9 @@ type TrackStats struct {
 	BufferedBytes int
 	// WaitingKeyframe reports a video track that needs a keyframe before it can play again.
 	WaitingKeyframe bool
+	// LateRun is how long the current run of frames skipped for being more than MaxBehind late has lasted, 0 once a
+	// frame played. An audio run that lasts 2 s while another track plays shifts the audio to play again.
+	LateRun time.Duration
 }
 
 // Playout buffers the received frames of one broadcast and releases each when it is due, keeping
@@ -119,11 +122,22 @@ type trackState struct {
 	notified   bool
 	latency    time.Duration
 	stats      TrackStats
+	// lateSince is when the current run of frames skipped as too late began, or -1, and lateLast the last skip of it;
+	// lateOthers is how many frames the other tracks had played then. shift delays the track's due times after its
+	// timeline fell behind the others', until its frames arrive in time without it for a window (earlySince, or -1).
+	// lastLag is how late past its due time the last frame played.
+	lateSince  time.Duration
+	lateLast   time.Duration
+	lateOthers uint64
+	shift      time.Duration
+	earlySince time.Duration
+	lastLag    time.Duration
 }
 
 type buffered struct {
 	f     Frame
 	media time.Duration
+	at    time.Duration // arrival
 }
 
 // NewPlayout returns a Playout for the tracks of one broadcast, which share one time base.
@@ -162,7 +176,7 @@ func newPlayout(tracks []Track, cfg PlayoutConfig, clk clock) (*Playout, error) 
 			}
 		}
 		t.Config = slices.Clone(t.Config)
-		p.tracks[t.Name] = &trackState{track: t, needKey: t.Kind == Video, staleSince: -1, aheadSince: -1}
+		p.tracks[t.Name] = &trackState{track: t, needKey: t.Kind == Video, staleSince: -1, aheadSince: -1, lateSince: -1, earlySince: -1}
 	}
 	return p, nil
 }
@@ -174,7 +188,10 @@ func newSlotPlayout(cfg PlayoutConfig, clk clock) (*Playout, error) {
 		return nil, err
 	}
 	p := &Playout{cfg: cfg, clk: clk, start: clk.now(), changed: make(chan struct{}), delay: cfg.MinDelay}
-	p.tracks = map[string]*trackState{Audio.String(): {staleSince: -1, aheadSince: -1}, Video.String(): {staleSince: -1, aheadSince: -1}}
+	p.tracks = map[string]*trackState{
+		Audio.String(): {staleSince: -1, aheadSince: -1, lateSince: -1, earlySince: -1},
+		Video.String(): {staleSince: -1, aheadSince: -1, lateSince: -1, earlySince: -1},
+	}
 	return p, nil
 }
 
@@ -186,10 +203,10 @@ func (p *Playout) setTrack(slot string, t *Track) {
 	defer p.mu.Unlock()
 	s := p.tracks[slot]
 	s.drop(len(s.frames))
-	next := trackState{staleSince: -1, aheadSince: -1, latency: s.latency, stats: s.stats, prev: s.prev}
+	next := trackState{staleSince: -1, aheadSince: -1, lateSince: -1, earlySince: -1, latency: s.latency, stats: s.stats, prev: s.prev}
 	keep := t == nil || sameTrack(&s.prev, t)
 	if keep {
-		next.played, next.last, next.needKey, next.notified = s.played, s.last, s.needKey, s.notified
+		next.played, next.last, next.needKey, next.notified, next.shift = s.played, s.last, s.needKey, s.notified, s.shift
 	}
 	if t != nil {
 		next.track = *t
@@ -301,7 +318,7 @@ func (p *Playout) push(track string, f Frame, arrival time.Time, measure bool) e
 		level := *f.AudioLevel
 		f.AudioLevel = &level
 	}
-	t.frames = slices.Insert(t.frames, i, &buffered{f, media})
+	t.frames = slices.Insert(t.frames, i, &buffered{f: f, media: media, at: a})
 	t.bytes += len(f.Data)
 	for len(t.frames) > p.cfg.MaxFrames || t.bytes > p.cfg.MaxBytes {
 		t.drop(1)
@@ -386,8 +403,32 @@ func (p *Playout) poll(t *trackState, now time.Time) pollResult {
 			continue
 		}
 		due := p.due(t, h.media)
-		if satSub(n, due) > p.cfg.MaxBehind {
+		if t.shift > 0 {
+			if h.at <= satSub(due, t.shift) {
+				if t.earlySince < 0 {
+					t.earlySince = n
+				}
+				if satSub(n, t.earlySince) >= estimateWindow {
+					t.shift, t.earlySince = 0, -1 // the timeline caught up
+					continue
+				}
+			} else {
+				t.earlySince = -1
+			}
+		}
+		if late := satSub(n, due); late > p.cfg.MaxBehind {
+			if t.lateSince < 0 || satSub(n, t.lateLast) >= estimateWindow {
+				t.lateSince, t.lateOthers = n, p.playedBesides(t)
+			}
+			t.lateLast = n
 			if !video {
+				if satSub(n, t.lateSince) >= estimateWindow && p.playedBesides(t) > t.lateOthers && p.othersOnTime(t) {
+					// The other tracks hold the reference and play: this timeline fell behind theirs, and no delay
+					// covers that. It plays again, out of sync by what it fell behind.
+					t.shift = satAdd(t.shift, late)
+					t.lateSince = -1
+					continue
+				}
 				t.skip(1)
 				t.stats.Skipped++
 				continue
@@ -404,6 +445,7 @@ func (p *Playout) poll(t *trackState, now time.Time) pollResult {
 		r.f, r.ok = h.f, true
 		t.skip(1)
 		t.stats.Played++
+		t.lateSince, t.lastLag = -1, max(satSub(n, due), 0)
 		if video && r.f.Keyframe {
 			t.needKey, t.notified = false, false
 		}
@@ -420,10 +462,33 @@ func (p *Playout) due(t *trackState, media time.Duration) time.Duration {
 	d := satAdd(p.est.reference(), media)
 	d = satAdd(d, p.delay)
 	d = satAdd(d, p.outLatency-t.latency)
+	d = satAdd(d, t.shift)
 	if t.track.Kind == Video {
 		d = satAdd(d, p.audioLag)
 	}
 	return d
+}
+
+// playedBesides is how many frames the tracks other than t have played.
+func (p *Playout) playedBesides(t *trackState) uint64 {
+	var n uint64
+	for _, o := range p.tracks {
+		if o != t {
+			n += o.stats.Played
+		}
+	}
+	return n
+}
+
+// othersOnTime reports whether the last frame each other track played was at most MaxBehind late: a delay on the path
+// makes them late too, a timeline of t's own that fell behind does not.
+func (p *Playout) othersOnTime(t *trackState) bool {
+	for _, o := range p.tracks {
+		if o != t && o.stats.Played > 0 && o.lastLag > p.cfg.MaxBehind {
+			return false
+		}
+	}
+	return true
 }
 
 // dueKeyframe returns the index of the newest buffered keyframe after the head that is due, or 0.
@@ -487,8 +552,12 @@ func (p *Playout) Stats() PlayoutStats {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	s := PlayoutStats{Delay: p.delay, Jitter: p.est.jitter(), Tracks: make(map[string]TrackStats, len(p.tracks))}
+	n := p.clk.now().Sub(p.start)
 	for name, t := range p.tracks {
 		ts := t.stats
+		if t.lateSince >= 0 {
+			ts.LateRun = max(satSub(n, t.lateSince), 0)
+		}
 		ts.Buffered, ts.BufferedBytes = len(t.frames), t.bytes
 		ts.WaitingKeyframe = t.track.Kind == Video && t.needKey
 		s.Tracks[name] = ts

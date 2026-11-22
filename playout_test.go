@@ -1057,3 +1057,229 @@ func TestAudioRecoversWhileLateVideoKeepsArriving(t *testing.T) {
 		}
 	}
 }
+
+// A sender whose audio timeline falls behind the clock its video is stamped with (a microphone that stalls for a second,
+// loses those samples and goes on stamping by count) makes every later audio frame later than the reference the video
+// holds. Once that lasts a whole window while the video plays, the audio is shifted to play again, out of sync by what
+// it fell behind, and the stats show how long the run of late frames lasted.
+func TestAudioRecoversFromATimelineBehindTheVideo(t *testing.T) {
+	p, clk := newTestPlayout(t, PlayoutConfig{}, audioTrack(), videoTrack())
+	start := clk.now()
+	type arrival struct {
+		at    time.Duration
+		track string
+		f     Frame
+	}
+	var evs []arrival
+	for j := 0; j < 300; j++ { // 10 s of video stamped by the clock
+		c := time.Duration(j) * time.Second / 30
+		evs = append(evs, arrival{c, "cam", videoAt(c, j%60 == 0)})
+	}
+	for i := range 450 { // 50 frames of 20 ms a second, with nothing from 1 s to 2 s and the same count after it
+		c := ms(20 * i)
+		if c >= time.Second {
+			c += time.Second
+		}
+		evs = append(evs, arrival{c, "mic", audioAt(ms(20 * i))})
+	}
+	sort.SliceStable(evs, func(i, j int) bool { return evs[i].at < evs[j].at })
+	played := map[string]map[int]int{"mic": {}, "cam": {}}
+	var longest time.Duration
+	for _, e := range evs {
+		for clk.now().Before(start.Add(e.at)) {
+			clk.advance(ms(1))
+			for _, tr := range []string{"mic", "cam"} {
+				for {
+					if _, ok := pollNow(p, tr); !ok {
+						break
+					}
+					played[tr][int(clk.now().Sub(start)/time.Second)]++
+				}
+			}
+			longest = max(longest, p.Stats().Tracks["mic"].LateRun)
+		}
+		push(t, p, e.track, e.f, start.Add(e.at))
+	}
+	if longest < estimateWindow-ms(50) {
+		t.Errorf("the longest run of late audio shown was %v, want about %v", longest, estimateWindow)
+	}
+	for sec := 5; sec < 10; sec++ {
+		if n := played["mic"][sec]; n < 45 {
+			t.Errorf("second %d: %d audio frames played, want 50 (stats %+v)", sec, n, p.Stats().Tracks["mic"])
+		}
+		if n := played["cam"][sec]; n < 25 {
+			t.Errorf("second %d: %d pictures played, want 30", sec, n)
+		}
+	}
+}
+
+// Audio that is late on its own, with no other track playing, is the path's delay and not a timeline behind another:
+// no shift is added, however long the frames are too late.
+func TestLateAudioAloneIsNotShifted(t *testing.T) {
+	p, clk := newTestPlayout(t, PlayoutConfig{}, audioTrack(), videoTrack())
+	start := clk.now()
+	var longest time.Duration
+	for i := range 300 { // 6 s of audio over a queue that grows by half a second a second from 1 s on
+		c := ms(20 * i)
+		at := c
+		if c >= time.Second {
+			at += (c - time.Second) / 2
+		}
+		longest = max(longest, p.Stats().Tracks["mic"].LateRun)
+		for clk.now().Before(start.Add(at)) {
+			clk.advance(ms(1))
+			for {
+				if _, ok := pollNow(p, "mic"); !ok {
+					break
+				}
+			}
+		}
+		push(t, p, "mic", audioAt(c), start.Add(at))
+	}
+	p.mu.Lock()
+	shift := p.tracks["mic"].shift
+	p.mu.Unlock()
+	if longest < estimateWindow || shift != 0 {
+		t.Errorf("audio shifted by %v with no other track playing, after a run of %v", shift, longest)
+	}
+}
+
+// A delay on the path that makes both tracks late, and drains, is not a timeline behind the others: the video plays
+// late too, so the audio is not shifted, and nothing is left out of sync once the queue drained.
+func TestCommonDelayDoesNotShiftTheAudio(t *testing.T) {
+	p, clk := newTestPlayout(t, PlayoutConfig{}, audioTrack(), videoTrack())
+	start := clk.now()
+	type arrival struct {
+		at    time.Duration
+		track string
+		f     Frame
+	}
+	lagAt := func(c time.Duration) time.Duration { // a queue that grows by 0.5 s a second from 1 s to 5 s, then is gone
+		if c >= time.Second && c < 5*time.Second {
+			return (c - time.Second) / 2
+		}
+		return 0
+	}
+	var evs []arrival
+	for j := range 300 {
+		c := time.Duration(j) * time.Second / 30
+		evs = append(evs, arrival{c + lagAt(c), "cam", videoAt(c, j%60 == 0)})
+	}
+	for i := range 500 {
+		c := ms(20 * i)
+		evs = append(evs, arrival{c + lagAt(c), "mic", audioAt(c)})
+	}
+	sort.SliceStable(evs, func(i, j int) bool { return evs[i].at < evs[j].at })
+	var maxShift time.Duration
+	for _, e := range evs {
+		for clk.now().Before(start.Add(e.at)) {
+			clk.advance(ms(1))
+			for _, tr := range []string{"mic", "cam"} {
+				for {
+					if _, ok := pollNow(p, tr); !ok {
+						break
+					}
+				}
+			}
+			p.mu.Lock()
+			maxShift = max(maxShift, p.tracks["mic"].shift)
+			p.mu.Unlock()
+		}
+		push(t, p, e.track, e.f, start.Add(e.at))
+	}
+	p.mu.Lock()
+	buffered := len(p.tracks["mic"].frames)
+	p.mu.Unlock()
+	if maxShift != 0 || buffered > 10 {
+		t.Errorf("audio shifted by up to %v, %d frames buffered at the end, after a delay both tracks had", maxShift, buffered)
+	}
+}
+
+// A shift ends once the frames arrive in time without it for a window: a timeline that fell behind and caught up again
+// plays in sync again.
+func TestShiftEndsWhenTheTimelineCatchesUp(t *testing.T) {
+	p, clk := newTestPlayout(t, PlayoutConfig{}, audioTrack(), videoTrack())
+	start := clk.now()
+	type arrival struct {
+		at    time.Duration
+		track string
+		f     Frame
+	}
+	var evs []arrival
+	for j := range 450 { // 15 s of video stamped by the clock
+		c := time.Duration(j) * time.Second / 30
+		evs = append(evs, arrival{c, "cam", videoAt(c, j%60 == 0)})
+	}
+	for i := range 750 { // audio 1 s behind the clock from 1 s to 7 s, then stamped by the clock again
+		c := ms(20 * i)
+		ts := c
+		if c >= time.Second && c < 7*time.Second {
+			ts = c - time.Second
+		}
+		evs = append(evs, arrival{c, "mic", audioAt(ts)})
+	}
+	sort.SliceStable(evs, func(i, j int) bool { return evs[i].at < evs[j].at })
+	var maxShift time.Duration
+	for _, e := range evs {
+		for clk.now().Before(start.Add(e.at)) {
+			clk.advance(ms(1))
+			for _, tr := range []string{"mic", "cam"} {
+				for {
+					if _, ok := pollNow(p, tr); !ok {
+						break
+					}
+				}
+			}
+			p.mu.Lock()
+			maxShift = max(maxShift, p.tracks["mic"].shift)
+			p.mu.Unlock()
+		}
+		push(t, p, e.track, e.f, start.Add(e.at))
+	}
+	p.mu.Lock()
+	shift := p.tracks["mic"].shift
+	p.mu.Unlock()
+	if maxShift < 500*time.Millisecond || shift != 0 {
+		t.Errorf("shift reached %v and is %v at the end, want about 1 s and then 0", maxShift, shift)
+	}
+}
+
+// A late burst, silence for a window, then one more late frame are two runs, not one that lasted the window.
+func TestLateRunEndsWithSilence(t *testing.T) {
+	p, clk := newTestPlayout(t, PlayoutConfig{}, audioTrack(), videoTrack())
+	start := clk.now()
+	push(t, p, "cam", videoAt(0, true), start)
+	pollNow(p, "cam")
+	for i := range 5 {
+		push(t, p, "mic", audioAt(ms(20*i)), start)
+	}
+	clk.advance(time.Second) // all five are too late
+	pollNow(p, "mic")
+	clk.advance(2 * time.Second)
+	push(t, p, "mic", audioAt(ms(100)), start.Add(ms(100)))
+	pollNow(p, "mic")
+	if r := p.Stats().Tracks["mic"].LateRun; r != 0 {
+		t.Errorf("a run of %v after a new late frame, want a new run", r)
+	}
+}
+
+// Taking the same track again keeps its shift; another track starts without it.
+func TestSetTrackKeepsTheShift(t *testing.T) {
+	p, err := newSlotPlayout(PlayoutConfig{}, newFakeClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := audioTrack()
+	p.setTrack("audio", &a)
+	p.tracks["audio"].shift = time.Second
+	p.setTrack("audio", &a)
+	if s := p.tracks["audio"].shift; s != time.Second {
+		t.Errorf("the same track again: shift %v", s)
+	}
+	b := audioTrack()
+	b.Name = "mic2"
+	p.setTrack("audio", &b)
+	if s := p.tracks["audio"].shift; s != 0 {
+		t.Errorf("another track: shift %v", s)
+	}
+}

@@ -55,7 +55,8 @@ How the delay and the reference are measured:
 
 What the playout drops:
 
-- Audio more than `MaxBehind` late is dropped (`Skipped`). Late video jumps to its newest due keyframe, or plays its late frames at once if there is none.
+- Audio more than `MaxBehind` late is dropped (`Skipped`). Late video jumps to its newest due keyframe, or plays its late frames at once if there is none. `TrackStats.LateRun` shows how long the current run of such frames has lasted.
+- An audio track whose frames are all too late for 2 s (the reference window) while another track plays on time has a timeline that fell behind the others', for example a microphone that lost samples and stamps by count: no delay covers that, so the track's due times move by its lateness and it plays again, out of sync by what it fell behind. Once its frames arrive in time without that move for 2 s, the move ends and the tracks are in sync again. Audio that is late while the other tracks are late too, or with no other track playing, is the path's delay and is not moved. A run of late frames ends when a frame plays or after 2 s with none skipped.
 - A frame more than 2 s earlier than the reference allows is dropped (`Ahead`), so a later frame with a wrong timestamp costs a track at most about 2 s. If only such frames arrive for 2 s, the estimate starts over.
 - A first frame stamped far ahead cannot be told from an honest one, because a timestamp has the sender's own epoch: it becomes the reference, and the frames that follow are dropped as `Late` until the 2 s stale window passes, so the track is silent for 2 to 3 s and then plays. Only the sender's own track is affected.
 - A frame older than one already played is dropped as `Late`; a repeated timestamp as `Duplicate`. If only older frames arrive for 2 s, the last frame played is taken as the bad one and the older frames play: after a delivery stall that resumes from an older point, one frame can play after a later one.
