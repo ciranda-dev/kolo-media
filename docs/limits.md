@@ -4,18 +4,21 @@ Every default and bound a user of kolo-media meets. A zero field in a config tak
 
 ## Catalog
 
-`CatalogLimits` bounds what `ParseCatalog` accepts. It can only lower the defaults: a field of 0, or above its default, takes the default. `MarshalBinary` checks the defaults, so whatever is parsed can be encoded again, and a default receiver reads what any sender writes.
+`CatalogLimits` bounds what `ParseCatalog` accepts and what `MarshalBinaryLimits` encodes. A field of 0 or less takes its default. `MaxTracks` can be raised without a ceiling, on both sides: a publisher passes the limits to `NewBroadcast` or `NewSecureBroadcast`, and a watcher sets `WatchOptions.CatalogLimits`. `MaxNameLen` and `MaxConfigLen` are MoQ bounds, so a value above the default takes the default. `MarshalBinary` checks the defaults.
 
 | Limit | Default | Reason |
 |---|---|---|
-| `MaxTracks` | 1024 | the renditions per broadcast a player keeps |
+| `MaxTracks` | 1024 | the renditions per broadcast a player keeps; the memory of a parse (below) |
 | `MaxNameLen` (track and group names) | 4096 bytes | the MoQ bound on a full track name |
 | `MaxConfigLen` | 65508 bytes | the largest config that fits one object property |
 
 - MoQ limits all properties of one object to 65535 bytes. The first object of a group also carries TIMESCALE, AUDIO_LEVEL and TIMESTAMP, 27 bytes at their longest, which leaves 65508 for the config.
-- The track count is checked against the bytes left before anything is allocated.
+- The track count is checked against the bytes left before anything is allocated (a track takes at least 15 bytes), so a raised `MaxTracks` costs nothing until the bytes are there.
+- What a raised `MaxTracks` can cost. A catalog is at most the origin's `MaxObjectSize` (16 MiB by default), so at most about 730,000 tracks of the smallest kind (23 bytes: an audio track with a 3-byte name). Measured on Apple M5, Go 1.27.4, darwin/arm64 (`ParseCatalog` of such catalogs): 2,000 tracks (46 KB) take 0.35 ms and allocate 0.4 MB, of which 0.2 MB is kept; 800,000 tracks (18.4 MB) take 150 ms and allocate 143 MB (7.8 times the bytes read), of which 97 MB is kept (5.3 times). A Track is 136 bytes before its strings. At the default of 1024 a catalog costs under 0.3 MB. A publisher that raises `MaxTracks` needs receivers that raise theirs: a receiver with the default refuses a catalog above 1024 (`ErrInvalidCatalog`, counted in `WatchStats.BadCatalogs`). Each `AddTrack` encodes the whole catalog again, so adding n tracks one by one costs n squared in encoding: 2,000 take 0.75 s together with the watcher in `TestManyTracks`.
+- A `Sender` of kolo-moq rotates its key after `SenderConfig.MaxTracks` (1024 by default) tracks; raise it with the catalog's.
 - The whole catalog must fit the origin's `MaxObjectSize` (16 MiB by default in kolo-moq). When it does not, `AddTrack` fails with an error that wraps `ErrInvalidCatalog` and `kolomoq.ErrObjectTooLarge`. `AddTrack` checks the size before it opens a catalog group, so the failure leaves the previous catalog as the current group and a late joiner finds it.
-- The catalog track and every media track count against the origin's `MaxTracks` (1000 by default in kolo-moq), so a default origin stops `AddTrack` at 999 media tracks with `ErrTooManyTracks`, below the catalog's 1024. Raise `OriginConfig.MaxTracks` to publish more.
+- kolo-moq's `OriginConfig.MaxTracks` is 0 by default, no cap, so the catalog's `MaxTracks` is what stops `AddTrack` (`ErrInvalidCatalog`). If you set an origin cap it counts the catalog track and every media track, and `AddTrack` fails with `ErrTooManyTracks` at the cap.
+- A relay's memory is bounded by kolo-moq, not by the catalog: `RelayConfig.MaxCacheBytes` (1 GiB by default) for the tracks it relays, with no count of tracks, and `Config.MaxSessionBufferedBytes` (8 times `MaxBufferedBytes`, 256 MiB) for what one session has queued. A watcher subscribes only to the tracks it selects, so a large catalog does not open a subscription per track.
 - A rendition `Group` holds tracks of one kind and one timescale.
 
 ## Publishing
@@ -86,7 +89,7 @@ What the playout drops:
 
 - Held objects keep the arrival time taken before decryption. With the group assembler and the playout, a video track can therefore hold up to three times `MaxFrames` and `MaxBytes` (48 MiB by default).
 - Each dropped held object counts in `TrackWatchStats.NoKey`, each object under a retired key in `Retired`, and each catalog object that does not open in `WatchStats.BadCatalogs`.
-- The keys themselves are bounded by kolo-moq's `secobj`: a receiver keeps a sender's current key and the one it replaced for `KeyringConfig.Retain` (450 ms: `MaxDelay` plus `MaxBehind`) after the first object under the newer key, and for `KeyringConfig.RetainMax` (`Retain` plus 400 ms) at most after the newer key arrived; an object seen before in the same subscription, or more than `ReplayGroups` (64) groups behind the newest of its key, is refused, in a window of at most `ReplayObjects` (8192) entries per subscription; a sender rotates beyond `SenderConfig.MaxTracks` (1024, the catalog's `MaxTracks`) tracks per key and after 2^24 units of 16 KiB of plaintext per track key.
+- The keys themselves are bounded by kolo-moq's `secobj`: a receiver keeps a sender's current key and the one it replaced for `KeyringConfig.Retain` (450 ms: `MaxDelay` plus `MaxBehind`) after the first object under the newer key, and for `KeyringConfig.RetainMax` (`Retain` plus 400 ms) at most after the newer key arrived; an object seen before in the same subscription, or more than `ReplayGroups` (64) groups behind the newest of its key, is refused, in a window of at most `ReplayObjects` (8192) entries per subscription; a sender rotates beyond `SenderConfig.MaxTracks` (1024, the catalog's default `MaxTracks`) tracks per key and after 2^24 units of 16 KiB of plaintext per track key.
 - Calls of up to 20 participants are tested. This is a testing bound, not a cryptographic one; the library sets no limit.
 - Overhead: a protected audio object is 24 bytes larger than an unprotected one (length prefix, list marker and length, tag and Key ID property), 9.6 kbit/s at 50 objects per second; under 1 percent for video.
 

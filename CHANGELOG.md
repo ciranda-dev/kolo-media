@@ -9,7 +9,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
+- `CatalogLimits.MaxTracks` can be raised without a ceiling, on both sides: a value above 1024 is kept instead of falling back to 1024. A publisher passes the limits to `NewBroadcast` and `NewSecureBroadcast` (a new variadic argument), a watcher sets `WatchOptions.CatalogLimits`. A parse allocates 7.8 times the catalog's bytes and keeps 5.3 times (see docs/limits.md).
+- `Catalog.MarshalBinaryLimits`: `MarshalBinary` checked against a caller's `CatalogLimits`.
 - `TrackStats.LateRun`: how long the current run of frames skipped for being more than `MaxBehind` late has lasted.
+
+### Changed
+
+- **Breaking:** `CatalogLimits.MaxTracks` above 1024 now raises the limit; it used to take 1024. A receiver that passed a higher value and relied on the clamp now accepts catalogs of more tracks. The default is still 1024, and the catalog encoding is unchanged.
+- **Breaking:** with kolo-moq's origin now uncapped by default (`OriginConfig.MaxTracks` 0), a default broadcast stops `AddTrack` at 1024 tracks with `ErrInvalidCatalog`, no longer at 999 with `ErrTooManyTracks`. `ErrTooManyTracks` is returned only when you set an origin cap.
 
 ### Fixed
 

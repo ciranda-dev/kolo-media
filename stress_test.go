@@ -802,24 +802,53 @@ func TestMoqErrorsHaveKolomediaPrefix(t *testing.T) {
 	check("WriteFrame after the broadcast closed", p.WriteFrame(Frame{Timestamp: 2, Data: []byte{1}}), ErrClosed, nil)
 }
 
-// TestOriginTrackLimit checks that the catalog's 1024 tracks are not all usable on a default origin: the
-// origin's MaxTracks (1000) also counts the catalog track.
-func TestOriginTrackLimit(t *testing.T) {
+// TestBroadcastTrackLimit checks that a default broadcast stops at the catalog's 1024 tracks, which a default
+// origin no longer limits, and keeps the last catalog it published.
+func TestBroadcastTrackLimit(t *testing.T) {
 	checkGoroutines(t)
 	o := newOrigin(t, nil)
 	b := newBroadcast(t, o)
 	var err error
 	n := 0
-	for ; err == nil && n < 1024; n++ {
+	for ; err == nil && n < 1100; n++ {
 		tr := audioTrack()
 		tr.Name = fmt.Sprintf("a%04d", n)
 		_, err = b.AddTrack(tr, PackagerOptions{})
 	}
-	if !errors.Is(err, ErrTooManyTracks) || !errors.Is(err, kolomoq.ErrTooManyTracks) {
+	if !errors.Is(err, ErrInvalidCatalog) || errors.Is(err, ErrTooManyTracks) {
 		t.Fatalf("AddTrack %d: %v", n, err)
 	}
-	if got := len(b.Catalog().Tracks); got != 999 {
-		t.Errorf("%d media tracks, want 999", got)
+	if got := len(b.Catalog().Tracks); got != 1024 {
+		t.Errorf("%d media tracks, want 1024", got)
+	}
+}
+
+// TestManyTracks sends a catalog of 2000 tracks from a publisher and a watcher that raise MaxTracks.
+func TestManyTracks(t *testing.T) {
+	checkGoroutines(t)
+	const n = 2000
+	lim := CatalogLimits{MaxTracks: n}
+	o := newOrigin(t, nil)
+	b, err := NewBroadcast(o, testNS, lim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { b.Close() })
+	for i := range n {
+		tr := audioTrack()
+		tr.Name = fmt.Sprintf("a%d", i)
+		addTrack(t, b, tr)
+	}
+	if _, err := b.AddTrack(audioTrack(), PackagerOptions{}); !errors.Is(err, ErrInvalidCatalog) {
+		t.Errorf("AddTrack past MaxTracks: %v", err)
+	}
+	sub, _ := publisherPair(t, o)
+	w := watch(t, sub, WatchOptions{Capabilities: avCaps(), CatalogLimits: lim})
+	if got := len(w.Catalog().Tracks); got != n {
+		t.Errorf("watcher saw %d tracks, want %d", got, n)
+	}
+	if s := w.Stats(); s.BadCatalogs != 0 || s.Audio.Subscriptions != 1 {
+		t.Errorf("stats %+v", s)
 	}
 }
 
