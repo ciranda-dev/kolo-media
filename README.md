@@ -125,10 +125,10 @@ go run ./examples/watch -peer <key> -for 5s
 
 | Symbol | What it does |
 |---|---|
-| `NewBroadcast(origin, ns)` | Publishes a catalog under a kolo-moq namespace. `AddTrack`, `RemoveTrack`, `Catalog` and `Close` change and end it. |
+| `NewBroadcast(origin, ns)` | Publishes a catalog under a kolo-moq namespace. `AddTrack`, `RemoveTrack`, `Catalog` and `Close` change and end it. Objects are not encrypted end to end: a relay reads and can change them. Use `NewSecureBroadcast` to protect them. |
 | `TrackPublisher.WriteFrame` | Packages one frame and publishes it without waiting for subscribers. |
 | `NewSecureBroadcast(origin, sender)` | `NewBroadcast` with every object, the catalog included, sealed end to end by a kolo-moq `secobj.Sender`. Protected audio carries no AUDIO_LEVEL. |
-| `Watch(ctx, session, ns, opts)` | Subscribes to a broadcast, picks tracks, follows catalog updates and plays them in sync. |
+| `Watch(ctx, session, ns, opts)` | Subscribes to a broadcast, picks tracks, follows catalog updates and plays them in sync. Without `Keys`, a watch accepts unprotected objects. |
 | `WatchOptions.Keys` | Opens every object with its sender's key from a `secobj.Keyring`, drops objects without one and refuses a session that neither owns the namespace nor is a listed relay (`secobj.ErrWrongSession`). `NoKey`, `Retired` and `Unauthenticated` in `Stats` count what it dropped. |
 | `WatchOptions.RequestKeyframes`, `TrackPublisher.KeyframeRequests` | A watch asks the publisher for a keyframe when its video waits for one or goes quiet for 500 ms, within bounds; the publisher reads the requests from the channel. Off by default. |
 | `Watcher.Next(ctx, kind)` | Returns the next due `Audio` or `Video` frame and its track. `Stats`, `Catalog`, `Tracks` and `Close` complete it. |
