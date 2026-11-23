@@ -159,7 +159,7 @@ func newSecParty(t *testing.T, relays ...ed25519.PublicKey) *secParty {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { p.sender.Close() })
-	if p.b, err = NewSecureBroadcast(n.origin, p.sender); err != nil {
+	if p.b, err = NewSecureBroadcast(n.origin, p.sender, nil); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { p.b.Close() })
@@ -545,7 +545,7 @@ func TestSecureCameraToggle(t *testing.T) {
 // TestSecureWriteFailure checks that a frame that cannot be sealed is not written at all.
 func TestSecureWriteFailure(t *testing.T) {
 	checkGoroutines(t)
-	if _, err := NewSecureBroadcast(newOrigin(t, nil), nil); !errors.Is(err, ErrInvalidConfig) {
+	if _, err := NewSecureBroadcast(newOrigin(t, nil), nil, nil); !errors.Is(err, ErrInvalidConfig) {
 		t.Errorf("nil sender: %v", err)
 	}
 	a, wp := newSecParty(t), newSecParty(t)
@@ -567,13 +567,36 @@ func TestSecureWriteFailure(t *testing.T) {
 		t.Errorf("an object was written after sealing failed: %d bytes", len(o.Payload))
 	}
 	o2 := newOrigin(t, nil)
-	if _, err := NewSecureBroadcast(o2, a.sender); !errors.Is(err, kolomoq.ErrClosed) {
+	if _, err := NewSecureBroadcast(o2, a.sender, nil); !errors.Is(err, kolomoq.ErrClosed) {
 		t.Errorf("closed sender: %v", err)
 	}
 	if w, err := o2.CreateTrack(a.ns, CatalogTrack, nil); err != nil {
 		t.Errorf("the failed broadcast left its catalog track: %v", err)
 	} else {
 		w.Close()
+	}
+}
+
+// TestSecureBroadcastOptions checks that NewSecureBroadcast applies its options like NewBroadcast.
+func TestSecureBroadcastOptions(t *testing.T) {
+	checkGoroutines(t)
+	n := newSecNode(t)
+	s, err := secobj.NewSender(n.origin, memberNS(n.pub), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	if _, err := NewSecureBroadcast(n.origin, s, &BroadcastOptions{CatalogLimits: CatalogLimits{MaxNameLen: defaultMaxNameLen + 1}}); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("name limit above the MoQ bound: %v", err)
+	}
+	b, err := NewSecureBroadcast(n.origin, s, &BroadcastOptions{CatalogLimits: CatalogLimits{MaxTracks: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { b.Close() })
+	addTrack(t, b, audioTrack())
+	if _, err := b.AddTrack(lowVideo(), PackagerOptions{}); !errors.Is(err, ErrInvalidCatalog) {
+		t.Errorf("AddTrack past the option's MaxTracks: %v", err)
 	}
 }
 

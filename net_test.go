@@ -99,7 +99,7 @@ func newOrigin(t *testing.T, cfg *kolomoq.OriginConfig) *kolomoq.Origin {
 
 func newBroadcast(t *testing.T, o *kolomoq.Origin) *Broadcast {
 	t.Helper()
-	b, err := NewBroadcast(o, testNS)
+	b, err := NewBroadcast(o, testNS, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1263,6 +1263,27 @@ func TestLateRunEndsWithSilence(t *testing.T) {
 	}
 }
 
+// A late run is over once a window passes with no skip, even when no frame arrives to end it.
+func TestLateRunEndsWhenFramesStop(t *testing.T) {
+	p, clk := newTestPlayout(t, PlayoutConfig{}, audioTrack(), videoTrack())
+	start := clk.now()
+	push(t, p, "cam", videoAt(0, true), start)
+	pollNow(p, "cam")
+	for i := range 5 {
+		push(t, p, "mic", audioAt(ms(20*i)), start)
+	}
+	clk.advance(time.Second)
+	pollNow(p, "mic")
+	clk.advance(500 * time.Millisecond)
+	if r := p.Stats().Tracks["mic"].LateRun; r != 500*time.Millisecond {
+		t.Fatalf("a run of %v, want 500ms", r)
+	}
+	clk.advance(2 * time.Second)
+	if r := p.Stats().Tracks["mic"].LateRun; r != 0 {
+		t.Errorf("a run of %v after 2.5 s without a skip, want 0", r)
+	}
+}
+
 // Taking the same track again keeps its shift; another track starts without it.
 func TestSetTrackKeepsTheShift(t *testing.T) {
 	p, err := newSlotPlayout(PlayoutConfig{}, newFakeClock())

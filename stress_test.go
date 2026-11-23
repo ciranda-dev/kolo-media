@@ -775,7 +775,7 @@ func TestMoqErrorsHaveKolomediaPrefix(t *testing.T) {
 	p := addTrack(t, b, audioTrack())
 	err := p.WriteFrame(Frame{Timestamp: 1, Data: make([]byte, 2<<10)})
 	check("WriteFrame over MaxObjectSize", err, ErrFrameTooLarge, kolomoq.ErrObjectTooLarge)
-	_, err = NewBroadcast(o, testNS)
+	_, err = NewBroadcast(o, testNS, nil)
 	check("NewBroadcast twice", err, ErrBroadcastExists, kolomoq.ErrTrackExists)
 
 	sub, _ := publisherPair(t, o)
@@ -793,7 +793,7 @@ func TestMoqErrorsHaveKolomediaPrefix(t *testing.T) {
 	addTrack(t, sb, audioTrack())
 	_, err = sb.AddTrack(lowVideo(), PackagerOptions{})
 	check("AddTrack past the origin's MaxTracks", err, ErrTooManyTracks, kolomoq.ErrTooManyTracks)
-	if _, err = NewBroadcast(small, kolomoq.Namespace{"other"}); !errors.Is(err, ErrTooManyTracks) {
+	if _, err = NewBroadcast(small, kolomoq.Namespace{"other"}, nil); !errors.Is(err, ErrTooManyTracks) {
 		t.Errorf("NewBroadcast past the origin's MaxTracks: %v", err)
 	}
 
@@ -823,13 +823,39 @@ func TestBroadcastTrackLimit(t *testing.T) {
 	}
 }
 
+// TestBroadcastOptions checks that options reach the catalog check and that a limit above the MoQ bound is refused.
+func TestBroadcastOptions(t *testing.T) {
+	checkGoroutines(t)
+	o := newOrigin(t, nil)
+	b, err := NewBroadcast(o, testNS, &BroadcastOptions{CatalogLimits: CatalogLimits{MaxTracks: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { b.Close() })
+	addTrack(t, b, audioTrack())
+	if _, err := b.AddTrack(lowVideo(), PackagerOptions{}); !errors.Is(err, ErrInvalidCatalog) {
+		t.Errorf("AddTrack past the option's MaxTracks: %v", err)
+	}
+	for _, lim := range []CatalogLimits{{MaxNameLen: defaultMaxNameLen + 1}, {MaxConfigLen: defaultMaxConfigLen + 1}} {
+		ns := kolomoq.Namespace{"refused"}
+		if _, err := NewBroadcast(o, ns, &BroadcastOptions{CatalogLimits: lim}); !errors.Is(err, ErrInvalidConfig) {
+			t.Errorf("%+v: %v", lim, err)
+		}
+		if w, err := o.CreateTrack(ns, CatalogTrack, nil); err != nil {
+			t.Errorf("%+v left its catalog track: %v", lim, err)
+		} else {
+			w.Close()
+		}
+	}
+}
+
 // TestManyTracks sends a catalog of 2000 tracks from a publisher and a watcher that raise MaxTracks.
 func TestManyTracks(t *testing.T) {
 	checkGoroutines(t)
 	const n = 2000
 	lim := CatalogLimits{MaxTracks: n}
 	o := newOrigin(t, nil)
-	b, err := NewBroadcast(o, testNS, lim)
+	b, err := NewBroadcast(o, testNS, &BroadcastOptions{CatalogLimits: lim})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -966,7 +992,7 @@ func FuzzGroupAssembler(f *testing.F) {
 func TestBroadcastOriginErrors(t *testing.T) {
 	o := newOrigin(t, &kolomoq.OriginConfig{MaxTracks: 2})
 	b := newBroadcast(t, o)
-	if _, err := NewBroadcast(o, testNS); err == nil {
+	if _, err := NewBroadcast(o, testNS, nil); err == nil {
 		t.Error("a second broadcast under the same namespace")
 	}
 	addTrack(t, b, audioTrack())

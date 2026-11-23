@@ -86,7 +86,7 @@ type TrackStats struct {
 	// WaitingKeyframe reports a video track that needs a keyframe before it can play again.
 	WaitingKeyframe bool
 	// LateRun is how long the current run of frames skipped for being more than MaxBehind late has lasted, 0 once a
-	// frame played. An audio run that lasts 2 s while another track plays shifts the audio to play again.
+	// frame played or 2 s passed without a skip. An audio run that lasts 2 s while another track plays shifts the audio to play again.
 	LateRun time.Duration
 }
 
@@ -122,10 +122,10 @@ type trackState struct {
 	notified   bool
 	latency    time.Duration
 	stats      TrackStats
-	// lateSince is when the current run of frames skipped as too late began, or -1, and lateLast the last skip of it;
-	// lateOthers is how many frames the other tracks had played then. shift delays the track's due times after its
-	// timeline fell behind the others', until its frames arrive in time without it for a window (earlySince, or -1).
-	// lastLag is how late past its due time the last frame played.
+	// lateSince starts the current run of frames skipped as too late (-1 if none), lateLast is its last skip and
+	// lateOthers the frames the other tracks had played at its start; the run ends after a window without a skip.
+	// shift delays due times after the timeline fell behind the others', until frames arrive in time without it
+	// for a window (earlySince, or -1). lastLag is how late the last frame played.
 	lateSince  time.Duration
 	lateLast   time.Duration
 	lateOthers uint64
@@ -555,7 +555,7 @@ func (p *Playout) Stats() PlayoutStats {
 	n := p.clk.now().Sub(p.start)
 	for name, t := range p.tracks {
 		ts := t.stats
-		if t.lateSince >= 0 {
+		if t.lateSince >= 0 && satSub(n, t.lateLast) < estimateWindow {
 			ts.LateRun = max(satSub(n, t.lateSince), 0)
 		}
 		ts.Buffered, ts.BufferedBytes = len(t.frames), t.bytes

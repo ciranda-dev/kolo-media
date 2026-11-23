@@ -34,7 +34,7 @@ func TestWatchTrackReAdd(t *testing.T) {
 			rm := newSecRelay(t)
 			pub := newSecNode(t)
 			ns := memberNS(pub.pub)
-			b, err := NewBroadcast(pub.origin, ns)
+			b, err := NewBroadcast(pub.origin, ns, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

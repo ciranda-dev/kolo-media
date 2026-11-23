@@ -91,13 +91,15 @@ type Track struct {
 
 // Catalog describes one broadcast. Version increases with every change.
 type Catalog struct {
+	// Version is the catalog track's group ID.
 	Version uint64
-	Tracks  []Track
+	// Tracks lists the renditions in publishing order.
+	Tracks []Track
 }
 
 // CatalogLimits bounds what ParseCatalog accepts and MarshalBinaryLimits encodes. A zero or negative field
-// takes its default, and MaxNameLen and MaxConfigLen above their default do too, since they are MoQ bounds.
-// A receiver reads what a sender writes when its limits are at least the sender's.
+// takes its default, and MaxNameLen and MaxConfigLen above their default do too, since they are MoQ bounds
+// (NewBroadcast refuses them instead). A receiver reads what a sender writes when its limits are at least the sender's.
 type CatalogLimits struct {
 	// MaxTracks defaults to 1024, the renditions per broadcast a player keeps. It has no ceiling:
 	// a catalog is at most the origin's MaxObjectSize and a track takes at least 15 bytes of it.
@@ -108,7 +110,10 @@ type CatalogLimits struct {
 	MaxConfigLen int
 }
 
-const defaultMaxTracks = 1024
+const (
+	defaultMaxTracks  = 1024
+	defaultMaxNameLen = 4096
+)
 
 // defaultMaxConfigLen is MoQ's 65535-byte limit on all properties of one object, less the most the
 // other properties of a group's first object take: TIMESCALE (1 + 9 bytes), AUDIO_LEVEL (1 + 2),
@@ -127,12 +132,13 @@ func (l CatalogLimits) withDefaults() CatalogLimits {
 	}
 	return CatalogLimits{
 		MaxTracks:    l.MaxTracks,
-		MaxNameLen:   clamp(l.MaxNameLen, 4096),
+		MaxNameLen:   clamp(l.MaxNameLen, defaultMaxNameLen),
 		MaxConfigLen: clamp(l.MaxConfigLen, defaultMaxConfigLen),
 	}
 }
 
 // MarshalBinary validates the catalog against the default limits and returns its canonical encoding.
+// A catalog parsed with raised limits needs MarshalBinaryLimits with the same limits.
 func (c *Catalog) MarshalBinary() ([]byte, error) {
 	return c.MarshalBinaryLimits(CatalogLimits{})
 }

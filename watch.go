@@ -41,8 +41,9 @@ type WatchStats struct {
 	// Catalog is the version of the catalog in use; BadCatalogs counts catalog objects that were ignored.
 	Catalog     uint64
 	BadCatalogs uint64
-	Audio       TrackWatchStats
-	Video       TrackWatchStats
+	// Audio and Video describe the subscription of each kind.
+	Audio TrackWatchStats
+	Video TrackWatchStats
 }
 
 // TrackWatchStats describes the subscription of one kind.

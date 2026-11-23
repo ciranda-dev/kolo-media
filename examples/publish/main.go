@@ -106,7 +106,7 @@ func run(ctx context.Context, listen string) error {
 		return err
 	}
 	defer s.Close()
-	b, err := kolomedia.NewBroadcast(origin, namespace)
+	b, err := kolomedia.NewBroadcast(origin, namespace, nil)
 	if err != nil {
 		return err
 	}

@@ -372,7 +372,7 @@ func TestBroadcastCatalog(t *testing.T) {
 	if err := again.WriteFrame(Frame{Timestamp: 1, Keyframe: true, Data: []byte{1}}); !errors.Is(err, ErrClosed) {
 		t.Errorf("WriteFrame after the broadcast closed: %v", err)
 	}
-	if _, err := NewBroadcast(o, testNS); err != nil {
+	if _, err := NewBroadcast(o, testNS, nil); err != nil {
 		t.Errorf("a new broadcast after Close: %v", err)
 	}
 }
