@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.1] - 2026-11-24
 
 ### Added
 
@@ -17,7 +17,6 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - **Breaking:** `NewBroadcast(origin, ns)` and `NewSecureBroadcast(origin, sender)` take a last argument `opts *BroadcastOptions`, nil for the defaults. Pass `nil` where you passed nothing; pass `&kolomedia.BroadcastOptions{CatalogLimits: lim}` where you passed `lim`.
 - **Breaking:** `NewBroadcast` and `NewSecureBroadcast` return `ErrInvalidConfig` for `CatalogLimits.MaxNameLen` or `MaxConfigLen` above their MoQ bound; they used to take the bound.
-- Release step: go.mod still requires kolo-moq v0.1.0, whose origin caps tracks at 1000 by default, so `TestBroadcastTrackLimit` and `TestManyTracks` fail with `GOWORK=off`. Bump it to the new kolo-moq tag and run `go mod tidy` before tagging.
 - **Breaking:** `CatalogLimits.MaxTracks` above 1024 now raises the limit; it used to take 1024. A receiver that passed a higher value and relied on the clamp now accepts catalogs of more tracks. The default is still 1024, and the catalog encoding is unchanged.
 - **Breaking:** with kolo-moq's origin now uncapped by default (`OriginConfig.MaxTracks` 0), a default broadcast stops `AddTrack` at 1024 tracks with `ErrInvalidCatalog`, no longer at 999 with `ErrTooManyTracks`. `ErrTooManyTracks` is returned only when you set an origin cap.
 
