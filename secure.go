@@ -13,12 +13,12 @@ import (
 )
 
 // NewSecureBroadcast is NewBroadcast with every object, the catalog included, sealed by s under
-// s.Namespace(). Protected audio tracks carry no AUDIO_LEVEL.
-func NewSecureBroadcast(origin *kolomoq.Origin, s *secobj.Sender) (*Broadcast, error) {
+// s.Namespace(). Protected audio tracks carry no AUDIO_LEVEL. limits is as for NewBroadcast.
+func NewSecureBroadcast(origin *kolomoq.Origin, s *secobj.Sender, limits ...CatalogLimits) (*Broadcast, error) {
 	if s == nil {
 		return nil, fmt.Errorf("%w: nil sender", ErrInvalidConfig)
 	}
-	return startBroadcast(origin, s.Namespace(), s)
+	return startBroadcast(origin, s.Namespace(), s, limits)
 }
 
 // sealedLen is the payload length of a protected object without private properties: the vi64

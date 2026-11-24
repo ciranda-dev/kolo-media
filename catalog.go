@@ -95,16 +95,20 @@ type Catalog struct {
 	Tracks  []Track
 }
 
-// CatalogLimits bounds what ParseCatalog accepts. A field outside 1 to its default takes the default,
-// so whatever ParseCatalog accepts, MarshalBinary encodes again.
+// CatalogLimits bounds what ParseCatalog accepts and MarshalBinaryLimits encodes. A zero or negative field
+// takes its default, and MaxNameLen and MaxConfigLen above their default do too, since they are MoQ bounds.
+// A receiver reads what a sender writes when its limits are at least the sender's.
 type CatalogLimits struct {
-	// MaxTracks defaults to 1024, the renditions per broadcast a player keeps.
+	// MaxTracks defaults to 1024, the renditions per broadcast a player keeps. It has no ceiling:
+	// a catalog is at most the origin's MaxObjectSize and a track takes at least 15 bytes of it.
 	MaxTracks int
 	// MaxNameLen bounds track and group names in bytes. It defaults to 4096, the MoQ bound on a full track name.
 	MaxNameLen int
 	// MaxConfigLen defaults to 65508, the largest config that fits one object property.
 	MaxConfigLen int
 }
+
+const defaultMaxTracks = 1024
 
 // defaultMaxConfigLen is MoQ's 65535-byte limit on all properties of one object, less the most the
 // other properties of a group's first object take: TIMESCALE (1 + 9 bytes), AUDIO_LEVEL (1 + 2),
@@ -118,8 +122,11 @@ func (l CatalogLimits) withDefaults() CatalogLimits {
 		}
 		return v
 	}
+	if l.MaxTracks <= 0 {
+		l.MaxTracks = defaultMaxTracks
+	}
 	return CatalogLimits{
-		MaxTracks:    clamp(l.MaxTracks, 1024),
+		MaxTracks:    l.MaxTracks,
 		MaxNameLen:   clamp(l.MaxNameLen, 4096),
 		MaxConfigLen: clamp(l.MaxConfigLen, defaultMaxConfigLen),
 	}
@@ -127,7 +134,12 @@ func (l CatalogLimits) withDefaults() CatalogLimits {
 
 // MarshalBinary validates the catalog against the default limits and returns its canonical encoding.
 func (c *Catalog) MarshalBinary() ([]byte, error) {
-	if err := c.validate(CatalogLimits{}.withDefaults()); err != nil {
+	return c.MarshalBinaryLimits(CatalogLimits{})
+}
+
+// MarshalBinaryLimits is MarshalBinary with the catalog validated against lim.
+func (c *Catalog) MarshalBinaryLimits(lim CatalogLimits) ([]byte, error) {
+	if err := c.validate(lim.withDefaults()); err != nil {
 		return nil, err
 	}
 	var e kolocodec.Encoder

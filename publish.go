@@ -30,6 +30,7 @@ type Broadcast struct {
 	origin *kolomoq.Origin
 	ns     kolomoq.Namespace
 	sender *secobj.Sender // nil for an unprotected broadcast
+	limits CatalogLimits
 
 	mu      sync.Mutex
 	closed  bool
@@ -56,12 +57,13 @@ type TrackPublisher struct {
 }
 
 // NewBroadcast creates the catalog track under ns in origin and publishes an empty catalog, version 0.
-// Catalog versions are the catalog track's group IDs.
-func NewBroadcast(origin *kolomoq.Origin, ns kolomoq.Namespace) (*Broadcast, error) {
-	return startBroadcast(origin, ns, nil)
+// Catalog versions are the catalog track's group IDs. AddTrack checks the catalog against lim, the first
+// of limits if there is one: a receiver reads it only if its own CatalogLimits.MaxTracks is as high.
+func NewBroadcast(origin *kolomoq.Origin, ns kolomoq.Namespace, limits ...CatalogLimits) (*Broadcast, error) {
+	return startBroadcast(origin, ns, nil, limits)
 }
 
-func startBroadcast(origin *kolomoq.Origin, ns kolomoq.Namespace, sender *secobj.Sender) (*Broadcast, error) {
+func startBroadcast(origin *kolomoq.Origin, ns kolomoq.Namespace, sender *secobj.Sender, limits []CatalogLimits) (*Broadcast, error) {
 	w, err := origin.CreateTrack(ns, CatalogTrack, &kolomoq.TrackOptions{Priority: CatalogPriority})
 	if errors.Is(err, kolomoq.ErrTrackExists) {
 		return nil, fmt.Errorf("%w: %w", ErrBroadcastExists, err)
@@ -69,6 +71,9 @@ func startBroadcast(origin *kolomoq.Origin, ns kolomoq.Namespace, sender *secobj
 		return nil, moqError("create catalog track", err)
 	}
 	b := &Broadcast{origin: origin, ns: slices.Clone(ns), sender: sender, catalog: w, tracks: make(map[string]*TrackPublisher), done: make(chan struct{})}
+	if len(limits) > 0 {
+		b.limits = limits[0]
+	}
 	if err := b.publishCatalog(nil); err != nil {
 		w.Close()
 		return nil, err
@@ -122,7 +127,7 @@ func (b *Broadcast) publishCatalog(extra *Track) error {
 	}
 	c := b.catalogLocked(extra)
 	c.Version = next
-	data, err := c.MarshalBinary()
+	data, err := c.MarshalBinaryLimits(b.limits)
 	if err != nil {
 		return err
 	}
@@ -187,7 +192,7 @@ func (b *Broadcast) AddTrack(t Track, opts PackagerOptions) (*TrackPublisher, er
 		return nil, fmt.Errorf("%w %q: already in the broadcast", ErrInvalidTrack, t.Name)
 	}
 	c := b.catalogLocked(&t)
-	if err := c.validate(CatalogLimits{}.withDefaults()); err != nil {
+	if err := c.validate(b.limits.withDefaults()); err != nil {
 		return nil, err
 	}
 	w, err := b.origin.CreateTrack(b.ns, t.Name, &kolomoq.TrackOptions{Priority: t.Priority, SubgroupDeliveryTimeout: MediaGroupTimeout})

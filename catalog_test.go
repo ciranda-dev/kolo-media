@@ -3,6 +3,7 @@ package kolomedia
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"math"
 	"reflect"
 	"runtime"
@@ -234,6 +235,60 @@ func TestParseCatalogLimits(t *testing.T) {
 	}
 }
 
+func manyTracks(n int) *Catalog {
+	c := &Catalog{Version: 1}
+	for i := range n {
+		tr := audioTrack()
+		tr.Name = fmt.Sprintf("a%d", i)
+		c.Tracks = append(c.Tracks, tr)
+	}
+	return c
+}
+
+func TestCatalogManyTracks(t *testing.T) {
+	c := manyTracks(2000)
+	if _, err := c.MarshalBinary(); !errors.Is(err, ErrInvalidCatalog) {
+		t.Errorf("MarshalBinary over the default: %v", err)
+	}
+	lim := CatalogLimits{MaxTracks: 2000}
+	if _, err := c.MarshalBinaryLimits(CatalogLimits{MaxTracks: 1999}); !errors.Is(err, ErrInvalidCatalog) {
+		t.Errorf("MarshalBinaryLimits over its limit: %v", err)
+	}
+	b, err := c.MarshalBinaryLimits(lim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseCatalog(b, lim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, c) {
+		t.Error("catalog changed in a round trip")
+	}
+	for _, l := range []CatalogLimits{{}, {MaxTracks: 1999}} {
+		if _, err := ParseCatalog(b, l); !errors.Is(err, kolocodec.ErrTooLarge) {
+			t.Errorf("ParseCatalog with %+v: %v", l, err)
+		}
+	}
+}
+
+// A raised MaxTracks still allocates nothing for a count the input cannot hold.
+func TestParseCatalogRaisedMaxTracksShort(t *testing.T) {
+	short := catalogBytes(1, 1<<20, func(e *kolocodec.Encoder) { e.PutFixed(make([]byte, 1000)) })
+	lim := CatalogLimits{MaxTracks: math.MaxInt}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for range 100 {
+		if _, err := ParseCatalog(short, lim); !errors.Is(err, kolocodec.ErrShortBuffer) {
+			t.Fatal(err)
+		}
+	}
+	runtime.ReadMemStats(&after)
+	if n := after.TotalAlloc - before.TotalAlloc; n > 100*4096 {
+		t.Errorf("100 parses allocated %d bytes", n)
+	}
+}
+
 func TestKindString(t *testing.T) {
 	if Audio.String() != "audio" || Video.String() != "video" || Kind(9).String() != "unknown" {
 		t.Error("Kind.String")
@@ -279,5 +334,8 @@ func TestCatalogLimitsClamp(t *testing.T) {
 	}
 	if got := (CatalogLimits{MaxTracks: -1, MaxNameLen: 9999, MaxConfigLen: 10}).withDefaults(); got != (CatalogLimits{1024, 4096, 10}) {
 		t.Errorf("withDefaults = %+v", got)
+	}
+	if got := (CatalogLimits{MaxTracks: 5000}).withDefaults().MaxTracks; got != 5000 {
+		t.Errorf("MaxTracks above the default = %d", got)
 	}
 }
