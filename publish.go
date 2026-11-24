@@ -56,14 +56,27 @@ type TrackPublisher struct {
 	group    *kolomoq.GroupWriter
 }
 
-// NewBroadcast creates the catalog track under ns in origin and publishes an empty catalog, version 0.
-// Catalog versions are the catalog track's group IDs. AddTrack checks the catalog against lim, the first
-// of limits if there is one: a receiver reads it only if its own CatalogLimits.MaxTracks is as high.
-func NewBroadcast(origin *kolomoq.Origin, ns kolomoq.Namespace, limits ...CatalogLimits) (*Broadcast, error) {
-	return startBroadcast(origin, ns, nil, limits)
+// BroadcastOptions configures a Broadcast. A nil *BroadcastOptions takes every default.
+type BroadcastOptions struct {
+	// CatalogLimits bounds the catalog AddTrack publishes. A receiver reads it only if its own
+	// CatalogLimits.MaxTracks is as high. MaxNameLen and MaxConfigLen above their defaults are ErrInvalidConfig.
+	CatalogLimits CatalogLimits
 }
 
-func startBroadcast(origin *kolomoq.Origin, ns kolomoq.Namespace, sender *secobj.Sender, limits []CatalogLimits) (*Broadcast, error) {
+// NewBroadcast creates the catalog track under ns in origin and publishes an empty catalog, version 0.
+// Catalog versions are the catalog track's group IDs.
+func NewBroadcast(origin *kolomoq.Origin, ns kolomoq.Namespace, opts *BroadcastOptions) (*Broadcast, error) {
+	return startBroadcast(origin, ns, nil, opts)
+}
+
+func startBroadcast(origin *kolomoq.Origin, ns kolomoq.Namespace, sender *secobj.Sender, opts *BroadcastOptions) (*Broadcast, error) {
+	var lim CatalogLimits
+	if opts != nil {
+		lim = opts.CatalogLimits
+	}
+	if lim.MaxNameLen > defaultMaxNameLen || lim.MaxConfigLen > defaultMaxConfigLen {
+		return nil, fmt.Errorf("%w: catalog name or config limit above the MoQ bound", ErrInvalidConfig)
+	}
 	w, err := origin.CreateTrack(ns, CatalogTrack, &kolomoq.TrackOptions{Priority: CatalogPriority})
 	if errors.Is(err, kolomoq.ErrTrackExists) {
 		return nil, fmt.Errorf("%w: %w", ErrBroadcastExists, err)
@@ -71,9 +84,7 @@ func startBroadcast(origin *kolomoq.Origin, ns kolomoq.Namespace, sender *secobj
 		return nil, moqError("create catalog track", err)
 	}
 	b := &Broadcast{origin: origin, ns: slices.Clone(ns), sender: sender, catalog: w, tracks: make(map[string]*TrackPublisher), done: make(chan struct{})}
-	if len(limits) > 0 {
-		b.limits = limits[0]
-	}
+	b.limits = lim
 	if err := b.publishCatalog(nil); err != nil {
 		w.Close()
 		return nil, err

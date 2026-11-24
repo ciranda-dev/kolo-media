@@ -272,6 +272,46 @@ func TestCatalogManyTracks(t *testing.T) {
 	}
 }
 
+// BenchmarkParseCatalog parses catalogs of the smallest valid tracks (23 bytes), as docs/limits.md gives; kept-B is what the result holds.
+func BenchmarkParseCatalog(b *testing.B) {
+	for _, n := range []int{2000, 700_000} {
+		b.Run(fmt.Sprint(n, "tracks"), func(b *testing.B) {
+			c := &Catalog{Tracks: make([]Track, n)}
+			for i := range c.Tracks {
+				tr := audioTrack()
+				tr.Name = string([]byte{33 + byte(i%94), 33 + byte(i/94%94), 33 + byte(i/8836)}) // 94 printable bytes: 830,584 names
+				tr.Priority, tr.Bitrate, tr.Timescale, tr.SampleRate = 0, 0, 8000, 8000
+				c.Tracks[i] = tr
+			}
+			lim := CatalogLimits{MaxTracks: n}
+			data, err := c.MarshalBinaryLimits(lim)
+			if err != nil {
+				b.Fatal(err)
+			}
+			var before, after runtime.MemStats
+			runtime.GC()
+			runtime.ReadMemStats(&before)
+			kept, err := ParseCatalog(data, lim)
+			if err != nil {
+				b.Fatal(err)
+			}
+			runtime.GC()
+			runtime.ReadMemStats(&after)
+			runtime.KeepAlive(kept)
+			b.SetBytes(int64(len(data)))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				if _, err := ParseCatalog(data, lim); err != nil {
+					b.Fatal(err)
+				}
+			}
+			b.ReportMetric(float64(after.HeapAlloc-before.HeapAlloc), "kept-B")
+			b.ReportMetric(float64(len(data))/float64(n), "bytes/track")
+		})
+	}
+}
+
 // A raised MaxTracks still allocates nothing for a count the input cannot hold.
 func TestParseCatalogRaisedMaxTracksShort(t *testing.T) {
 	short := catalogBytes(1, 1<<20, func(e *kolocodec.Encoder) { e.PutFixed(make([]byte, 1000)) })

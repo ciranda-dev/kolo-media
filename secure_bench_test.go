@@ -134,7 +134,7 @@ func BenchmarkSealAudio20ms(b *testing.B) {
 	})
 	b.Run("write protected", func(b *testing.B) {
 		s, origin, _ := benchSender(b)
-		bc, err := NewSecureBroadcast(origin, s)
+		bc, err := NewSecureBroadcast(origin, s, nil)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -146,7 +146,7 @@ func BenchmarkSealAudio20ms(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		bc, err := NewBroadcast(origin, testNS)
+		bc, err := NewBroadcast(origin, testNS, nil)
 		if err != nil {
 			b.Fatal(err)
 		}

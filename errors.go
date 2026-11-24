@@ -80,8 +80,10 @@ func moqError(op string, err error) error {
 
 // PropertyError reports a malformed, missing, duplicate or mismatched LOC property of an object.
 type PropertyError struct {
+	// Type is the property type.
 	Type uint64
-	Err  error
+	// Err is what is wrong with it.
+	Err error
 }
 
 // Error returns the message with the property type in hex.

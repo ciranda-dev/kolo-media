@@ -17,6 +17,7 @@ const (
 
 // Property is one MoQ object property: Value when Type is even, Bytes when Type is odd.
 type Property struct {
+	// Type is the property type; its parity says which of Value and Bytes is used.
 	Type  uint64
 	Value uint64
 	Bytes []byte
@@ -25,6 +26,7 @@ type Property struct {
 // Object is a frame packaged for MoQ: its place in the track, its properties in ascending type
 // order and its payload. Payload and Bytes share memory with the frame and track; do not modify them.
 type Object struct {
+	// Group and ID are the object's group ID and object ID in its track.
 	Group      uint64
 	ID         uint64
 	Properties []Property

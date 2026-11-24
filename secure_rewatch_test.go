@@ -343,7 +343,7 @@ func TestWatchRestartKeepsPlayout(t *testing.T) {
 				opts.Keys = v.keys
 			} else {
 				var err error
-				if b, err = NewBroadcast(a.origin, kolomoq.Namespace{"plain"}); err != nil {
+				if b, err = NewBroadcast(a.origin, kolomoq.Namespace{"plain"}, nil); err != nil {
 					t.Fatal(err)
 				}
 				t.Cleanup(func() { b.Close() })
